@@ -55,9 +55,42 @@ def get_os_info():
         "status": status
     }
 
+def check_firewall_status():
+    """
+    Checks Windows Firewall status for all profiles (Domain, Private, Public).
+    Returns:
+        dict: {
+            "firewall_enabled": True/False,  # True if all profiles are ON
+            "profiles": {"Domain": True/False, "Private": True/False, "Public": True/False}
+        }
+    """
+    def parse_firewall_output(output):
+        profiles = {}
+        current_profile = None
+        for line in output.splitlines():
+            line = line.strip()
+            if "Profile Settings:" in line:
+                current_profile = line.split("Profile")[0].strip()  # Domain / Private / Public
+            elif line.lower().startswith("state") and current_profile:
+                status = "on" in line.lower()
+                profiles[current_profile] = status
+        return profiles
+
+    try:
+        result = subprocess.run(
+            ["netsh", "advfirewall", "show", "allprofiles", "state"],
+            capture_output=True,
+            text=True
+        )
+        profiles_status = parse_firewall_output(result.stdout)
+        overall = all(profiles_status.values()) if profiles_status else None
+        return {"firewall_enabled": overall, "profiles": profiles_status}
+
+    except Exception as e:
+        return {"firewall_enabled": None, "error": str(e)}
+
 
 # ======= Test Run =======
 if __name__ == "__main__":
-    info = get_os_info()
-    for key, value in info.items():
-        print(f"{key}: {value}")
+    firewall_status = check_firewall_status()
+    print(firewall_status)
