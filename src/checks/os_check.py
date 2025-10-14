@@ -36,8 +36,8 @@ def get_os_info():
         except:
             edition = "Unknown"
 
-    # Hard-coded latest builds for MVP (these are not the latest right now)
-    latest_builds = {"10": 19045, "11": 22621}  # 19045 = latest Win10, 22621 = latest Win11
+    # Hard-coded latest builds for MVP
+    latest_builds = {"10": 19045, "11": 26200}  # 19045 = latest Win10, 26200 = latest Win11
     status = "Up to date"
 
     # Compare build number
