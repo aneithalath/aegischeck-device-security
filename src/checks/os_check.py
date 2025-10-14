@@ -1,6 +1,7 @@
 import platform
 import ctypes
 import subprocess
+import datetime
 
 def get_os_info():
     """
@@ -90,7 +91,85 @@ def check_firewall_status():
         return {"firewall_enabled": None, "error": str(e)}
 
 
+def check_defender_status():
+    """
+    Checks Windows Defender real-time protection and signature status.
+    Returns:
+        dict: {
+            "defender_enabled": True/False/None,  # None if cannot check
+            "signature_version": str or None,
+            "definition_age_days": int or None,
+            "risk_flag": str,  # "Low", "Medium", "High"
+            "message": str
+        }
+    """
+    result_dict = {
+        "defender_enabled": None,
+        "signature_version": None,
+        "definition_age_days": None,
+        "risk_flag": "Unknown",
+        "message": ""
+    }
+
+    try:
+        # ===== Real-time protection =====
+        cmd_realtime = [
+            "powershell",
+            "-Command",
+            "Get-MpComputerStatus | Select-Object -ExpandProperty RealTimeProtectionEnabled"
+        ]
+        rt_result = subprocess.run(cmd_realtime, capture_output=True, text=True)
+        rt_output = rt_result.stdout.strip().lower()
+
+        if rt_output == "true":
+            result_dict["defender_enabled"] = True
+        elif rt_output == "false":
+            result_dict["defender_enabled"] = False
+        else:
+            result_dict["defender_enabled"] = None
+
+        # ===== Signature version & last update =====
+        cmd_sig = [
+            "powershell",
+            "-Command",
+            "Get-MpComputerStatus | "
+            "Select-Object -ExpandProperty AntivirusSignatureLastUpdated"
+        ]
+        sig_result = subprocess.run(cmd_sig, capture_output=True, text=True)
+        sig_output = sig_result.stdout.strip()
+
+        if sig_output:
+            result_dict["signature_version"] = sig_output
+
+            # Convert to datetime to compute age
+            try:
+                last_update = datetime.datetime.strptime(sig_output, "%m/%d/%Y %I:%M:%S %p")
+                age_days = (datetime.datetime.now() - last_update).days
+                result_dict["definition_age_days"] = age_days
+            except:
+                result_dict["definition_age_days"] = None
+
+        # ===== Risk evaluation =====
+        if result_dict["defender_enabled"] is False or \
+           (result_dict["definition_age_days"] is not None and result_dict["definition_age_days"] > 7):
+            result_dict["risk_flag"] = "High"
+            result_dict["message"] = "Defender is off or virus definitions are outdated. Update immediately."
+        elif result_dict["defender_enabled"] is True:
+            result_dict["risk_flag"] = "Low"
+            result_dict["message"] = "Defender is active and virus definitions are reasonably up to date."
+        else:
+            result_dict["risk_flag"] = "Medium"
+            result_dict["message"] = "Unable to reliably determine Defender status. Run as admin."
+
+    except Exception as e:
+        result_dict["risk_flag"] = "Unknown"
+        result_dict["message"] = f"Error checking Defender status: {str(e)}"
+
+    return result_dict
+
+
 # ======= Test Run =======
 if __name__ == "__main__":
-    firewall_status = check_firewall_status()
-    print(firewall_status)
+    status = check_defender_status()
+    for k, v in status.items():
+        print(f"{k}: {v}")
