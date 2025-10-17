@@ -1,6 +1,7 @@
 # src/checks/password_check.py
 """
 Password scanner for Chromium-family browsers + Wi-Fi profiles (Windows).
+
 - Discovers Chromium-based browsers/profiles and extracts saved logins.
 - Decrypts Chrome password blobs (DPAPI and AES-GCM v10/v11).
 - Optionally checks breach counts via HaveIBeenPwned if hibp_helper is available.
@@ -27,7 +28,7 @@ try:
     def dpapi_unprotect(encrypted_bytes: bytes) -> bytes:
         return win32crypt.CryptUnprotectData(encrypted_bytes, None, None, None, 0)[1]
 except Exception:
-    dpapi_unprotect = None  # we'll raise if missing and needed
+    dpapi_unprotect = None  # we'll return None when DPAPI isn't available
 
 # AES-GCM support (pycryptodome)
 try:
@@ -270,20 +271,17 @@ def extract_wifi_passwords() -> List[Dict]:
 # ---------------------------
 # High-level scan orchestrator
 # ---------------------------
-def run_password_scan(check_wifi: bool = False, limit_per_profile: int = 200) -> List[Dict]:
+def run_password_scan(limit_per_profile: int = 200, include_wifi: bool = True) -> Dict:
     """
-    High-level CLI function.
-    - Prompts for consent.
-    - Scans Chromium-family saved logins and optionally Wi-Fi keys.
-    - If hibp_helper is available, queries HIBP for breach counts (uses caching).
-    - Prints results and returns a structured list of results (no plaintext saved).
+    Runs the scan automatically (Chromium + optional Wi-Fi) and returns structured results:
+    {
+        "results": [...],
+        "summary": {"total": N, "compromised": M},
+        "top_compromised": [...]
+    }
     """
-    print("This will scan saved Chromium-family browser passwords (and optionally Wi-Fi keys) on this machine.")
+    print("Scanning saved Chromium-family browser passwords{} on this machine...".format(" and Wi-Fi keys" if include_wifi else ""))
     print("Plaintext passwords will NOT be sent to any server; only SHA-1 prefixes are used for lookup (k-anonymity).")
-    consent = input("Proceed? (y/n): ").strip().lower()
-    if consent != "y":
-        print("Aborted.")
-        return []
 
     results = []
     cache = None
@@ -345,8 +343,8 @@ def run_password_scan(check_wifi: bool = False, limit_per_profile: int = 200) ->
         else:
             print(f"[{c.get('browser')}/{c.get('profile')}] {c.get('origin')} ({c.get('username')}) — risk: {risk} — breaches: {breach_count}")
 
-    # Wi-Fi
-    if check_wifi:
+    # Wi-Fi (included by default)
+    if include_wifi:
         print("\nScanning Wi-Fi profiles (requires admin for key=clear)...")
         wifi = extract_wifi_passwords()
         for w in wifi:
@@ -397,21 +395,23 @@ def run_password_scan(check_wifi: bool = False, limit_per_profile: int = 200) ->
             else:
                 print(f"  - [wifi] {c.get('ssid')} — {c['breach_count']} breaches")
 
-    # Do NOT return plaintext passwords. Results intentionally contain no plaintext.
-    return results
+    # Build structured return for programmatic consumption
+    top_compromised = sorted(compromised, key=lambda x: (x.get("breach_count") or 0), reverse=True)[:5]
+    summary = {"total": len(results), "compromised": len(compromised)}
+    return {"results": results, "summary": summary, "top_compromised": top_compromised}
 
 # ---------------------------
 # Module CLI
 # ---------------------------
 def _cli_main():
     # Simple wrapper to run scan from command line
-    check_wifi = False
-    if len(sys.argv) > 1 and sys.argv[1] in ("--wifi", "-w"):
-        check_wifi = True
+    include_wifi = True
+    if len(sys.argv) > 1 and sys.argv[1] in ("--no-wifi",):
+        include_wifi = False
     print("Password breach scanner (Chromium-family + optional Wi-Fi).")
     if not hibp_available:
         print("Note: HIBP helper not available — breach counts will not be retrieved. Add src/hibp_helper.py to enable HIBP checks.")
-    run_password_scan(check_wifi=check_wifi)
+    run_password_scan(include_wifi=include_wifi)
 
 if __name__ == "__main__":
     _cli_main()
