@@ -229,8 +229,6 @@ def print_results_summary(results: Dict[str, Any]) -> None:
         for c in top_compromised[:5]:  # Limit to 5
             if c.get("source") == "chrome":
                 print(f"  - [chrome] {c.get('origin')} ({c.get('username')}) — {c.get('breach_count')} breaches")
-            else:
-                print(f"  - [wifi] {c.get('ssid')} — {c.get('breach_count')} breaches")
     
     # Permissions Check Summary
     perm_results = results.get("permissions", {})
@@ -256,7 +254,6 @@ def parse_arguments() -> argparse.Namespace:
         description="Personal Device Security Advisor - Scan your system for security vulnerabilities.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter
     )
-    parser.add_argument("--no-wifi", action="store_true", help="Skip Wi-Fi password scan")
     parser.add_argument("--limit", type=int, default=200, 
                        help="Limit passwords scanned per browser profile")
     parser.add_argument("--json", action="store_true", 
@@ -296,7 +293,7 @@ def run_checks(args: argparse.Namespace) -> Dict[str, Any]:
         def run_pw_check():
             return password_check.run_password_scan(
                 limit_per_profile=args.limit,
-                include_wifi=not args.no_wifi
+                include_wifi=False
             )
             
         pw_result = run_with_progress(

@@ -1,6 +1,6 @@
 # src/checks/password_check.py
 """
-Password scanner for Chromium-family browsers + Wi-Fi profiles (Windows).
+Password scanner for Chromium-family browsers.
 
 - Discovers Chromium-based browsers/profiles and extracts saved logins.
 - Decrypts Chrome password blobs (DPAPI and AES-GCM v10/v11).
@@ -14,7 +14,6 @@ import json
 import base64
 import sqlite3
 import shutil
-import subprocess
 import hashlib
 from pathlib import Path
 from typing import List, Dict, Optional
@@ -233,54 +232,23 @@ def extract_all_chromium_logins(limit_per_profile: int = 200) -> List[Dict]:
                 pass
     return all_creds
 
-# ---------------------------
-# Wi-Fi extraction (Windows)
-# ---------------------------
-def extract_wifi_passwords() -> List[Dict]:
-    """
-    Extract stored Wi-Fi SSIDs and keys (requires admin for key=clear to return password).
-    Returns list of {"ssid": ssid, "password": password_or_None}
-    """
-    profiles = []
-    try:
-        res = subprocess.run(["netsh", "wlan", "show", "profiles"], capture_output=True, text=True, timeout=10)
-        out = res.stdout
-        for line in out.splitlines():
-            line = line.strip()
-            # localized outputs exist; check for ':' and plausible profile lines
-            if ":" in line and ("All User Profile" in line or "Perfil de todos los usuarios" in line or line.lower().startswith("profile")):
-                parts = line.split(":", 1)
-                if len(parts) == 2:
-                    name = parts[1].strip()
-                    if not name:
-                        continue
-                    # show profile with key
-                    r2 = subprocess.run(["netsh", "wlan", "show", "profile", name, "key=clear"], capture_output=True, text=True, timeout=10)
-                    key = None
-                    for l in r2.stdout.splitlines():
-                        if "Key Content" in l or "Contenido de la clave" in l:
-                            kparts = l.split(":", 1)
-                            if len(kparts) == 2:
-                                key = kparts[1].strip()
-                                break
-                    profiles.append({"ssid": name, "password": key})
-    except Exception:
-        pass
-    return profiles
+
 
 # ---------------------------
 # High-level scan orchestrator
 # ---------------------------
-def run_password_scan(limit_per_profile: int = 200, include_wifi: bool = True) -> Dict:
+def run_password_scan(limit_per_profile: int = 200, include_wifi: bool = False) -> Dict:
     """
-    Runs the scan automatically (Chromium + optional Wi-Fi) and returns structured results:
+    Runs the scan automatically (Chromium browser passwords) and returns structured results:
     {
         "results": [...],
         "summary": {"total": N, "compromised": M},
         "top_compromised": [...]
     }
+    
+    Note: The include_wifi parameter is kept for backwards compatibility but is ignored.
     """
-    print("Scanning saved Chromium-family browser passwords{} on this machine...".format(" and Wi-Fi keys" if include_wifi else ""))
+    print("Scanning saved Chromium-family browser passwords on this machine...")
     print("Plaintext passwords will NOT be sent to any server; only SHA-1 prefixes are used for lookup (k-anonymity).")
 
     results = []
@@ -343,44 +311,7 @@ def run_password_scan(limit_per_profile: int = 200, include_wifi: bool = True) -
         else:
             print(f"[{c.get('browser')}/{c.get('profile')}] {c.get('origin')} ({c.get('username')}) — risk: {risk} — breaches: {breach_count}")
 
-    # Wi-Fi (included by default)
-    if include_wifi:
-        print("\nScanning Wi-Fi profiles (requires admin for key=clear)...")
-        wifi = extract_wifi_passwords()
-        for w in wifi:
-            pwd = w.get("password")
-            breach_count = None
-            risk = "Unknown"
-            if pwd:
-                sha = sha1_hex(pwd)
-                if hibp_available and hibp_check_hash:
-                    try:
-                        breach_count = hibp_check_hash(sha, cache=None)
-                    except Exception:
-                        breach_count = None
-                else:
-                    breach_count = None
-                if breach_count is None:
-                    risk = "Unknown"
-                elif breach_count == 0:
-                    risk = "Low"
-                elif breach_count < 100:
-                    risk = "Medium"
-                else:
-                    risk = "High"
-            else:
-                risk = "NoPassword"
-            results.append({
-                "source": "wifi",
-                "ssid": w.get("ssid"),
-                "breach_count": breach_count,
-                "risk": risk
-            })
-            if Fore:
-                tag = color(risk, Fore.RED if risk=="High" else (Fore.YELLOW if risk=="Medium" else (Fore.GREEN if risk=="Low" else Fore.WHITE)))
-                print(f"[wifi] {w.get('ssid')} — {tag} — breaches: {breach_count}")
-            else:
-                print(f"[wifi] {w.get('ssid')} — risk: {risk} — breaches: {breach_count}")
+    # Wi-Fi scanning has been removed
 
     # Summary
     compromised = [r for r in results if isinstance(r.get("breach_count"), int) and r["breach_count"] > 0]
@@ -392,8 +323,6 @@ def run_password_scan(limit_per_profile: int = 200, include_wifi: bool = True) -
         for c in sorted(compromised, key=lambda x: (x.get("breach_count") or 0), reverse=True)[:5]:
             if c["source"] == "chrome":
                 print(f"  - [chrome] {c['origin']} ({c['username']}) — {c['breach_count']} breaches")
-            else:
-                print(f"  - [wifi] {c.get('ssid')} — {c['breach_count']} breaches")
 
     # Build structured return for programmatic consumption
     top_compromised = sorted(compromised, key=lambda x: (x.get("breach_count") or 0), reverse=True)[:5]
@@ -405,13 +334,10 @@ def run_password_scan(limit_per_profile: int = 200, include_wifi: bool = True) -
 # ---------------------------
 def _cli_main():
     # Simple wrapper to run scan from command line
-    include_wifi = True
-    if len(sys.argv) > 1 and sys.argv[1] in ("--no-wifi",):
-        include_wifi = False
-    print("Password breach scanner (Chromium-family + optional Wi-Fi).")
+    print("Password breach scanner (Chromium-family browsers).")
     if not hibp_available:
         print("Note: HIBP helper not available — breach counts will not be retrieved. Add src/hibp_helper.py to enable HIBP checks.")
-    run_password_scan(include_wifi=include_wifi)
+    run_password_scan()
 
 if __name__ == "__main__":
     _cli_main()
