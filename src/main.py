@@ -23,20 +23,36 @@ import subprocess
 from pathlib import Path
 from typing import Dict, Any, Callable, TypeVar, Optional, List, cast
 from concurrent.futures import ThreadPoolExecutor, Future
-
-# Add graceful import handling for both module and script modes
+# Import AI risk analyzer
 try:
-    # When run as a module (python -m src.main)
-    from .checks import os_check, permissions_check, password_check
+    from ai import risk_analyzer
 except ImportError:
     try:
-        # When run as a script from project root (python src/main.py)
-        from src.checks import os_check, permissions_check, password_check
+        import src.ai.risk_analyzer as risk_analyzer
     except ImportError:
-        # Explicit fallback with helpful message
-        print("Error: Could not import check modules. Make sure to run from project root.")
-        print("Usage: python -m src.main or python src/main.py from project root.")
-        sys.exit(1)
+        risk_analyzer = None
+
+
+
+# Always ensure project root is in sys.path for absolute imports
+PROJECT_ROOT = str(Path(__file__).resolve().parent.parent)
+if PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, PROJECT_ROOT)
+
+try:
+    from src.checks import os_check, permissions_check, password_check
+except ImportError as e:
+    print("Error: Could not import check modules. Make sure to run from project root.")
+    print("Usage: python -m src.main or python src/main.py from project root.")
+    print(f"Actual ImportError: {e}")
+    # Check for __init__.py existence
+    checks_init = Path(__file__).parent / "checks" / "__init__.py"
+    src_init = Path(__file__).parent / "__init__.py"
+    if not checks_init.exists():
+        print(f"Missing: {checks_init}")
+    if not src_init.exists():
+        print(f"Missing: {src_init}")
+    sys.exit(1)
 
 # Optional colored output with graceful fallback
 try:
@@ -215,17 +231,23 @@ def print_results_summary(results: Dict[str, Any]) -> None:
     pw_summary = pw_results.get("summary", {})
     total = pw_summary.get("total", 0)
     compromised = pw_summary.get("compromised", 0)
-    
+
     pw_risk = "Low"
     if compromised > 0:
         pw_risk = "High" if compromised > 5 else "Medium"
-    
+
     print_risk(f"Password Risk ({compromised} of {total} compromised)", pw_risk)
-    
+
+    # Show all password check results
+    print("\nPassword Check Results:")
+    for entry in pw_results.get("results", []):
+        risk = entry.get("risk", "Unknown")
+        print(f"  - [{entry.get('browser')}/{entry.get('profile')}] {entry.get('origin')} ({entry.get('username')}) — Risk: {colorize_risk(risk)} — Breaches: {entry.get('breach_count')}")
+
     # Show top compromised items
     top_compromised = pw_results.get("top_compromised", [])
     if top_compromised:
-        print("Top compromised passwords:")
+        print("\nTop compromised passwords:")
         for c in top_compromised[:5]:  # Limit to 5
             if c.get("source") == "chrome":
                 print(f"  - [chrome] {c.get('origin')} ({c.get('username')}) — {c.get('breach_count')} breaches")
@@ -293,7 +315,6 @@ def run_checks(args: argparse.Namespace) -> Dict[str, Any]:
         def run_pw_check():
             return password_check.run_password_scan(
                 limit_per_profile=args.limit,
-                include_wifi=False
             )
             
         pw_result = run_with_progress(
@@ -326,7 +347,7 @@ def main() -> None:
     
     # Run all checks
     results = run_checks(args)
-    
+
     # Output results
     if args.json:
         # JSON output mode
@@ -334,7 +355,51 @@ def main() -> None:
     else:
         # Formatted text output
         print_results_summary(results)
-        
+
+    # Run AI risk analyzer and show results
+    ai_health_status = "OK"
+    ai_result = None
+    try:
+        if risk_analyzer:
+            ai_result = risk_analyzer.analyze_risks(
+                results.get("os", {}),
+                results.get("passwords", {}),
+                results.get("permissions", {})
+            )
+            ai_health_status = ai_result.get('health', 'OK')
+        else:
+            raise ImportError("risk_analyzer not available")
+    except Exception as e:
+        # Fallback to local analyzer logic in risk_analyzer.py
+        ai_result = risk_analyzer.analyze_risks(
+            results.get("os", {}),
+            results.get("passwords", {}),
+            results.get("permissions", {}),
+            fallback=True
+        )
+        ai_health_status = ai_result.get('health', 'FALLBACK MODE')
+        print("\nGemini AI unavailable—using local analyzer.")
+
+    # Print AI health status
+    print("\n" + "="*50)
+    print(f"{Fore.MAGENTA}{Style.BRIGHT}AI Risk Analyzer Summary{Style.RESET_ALL}")
+    print(f"Security AI Health: {ai_health_status}")
+    print(ai_result['display'])
+    print("\nInsights:")
+    for insight in ai_result['insights']:
+        print(f"- {insight}")
+    print("\nRecommendations:")
+    for rec in ai_result['recommendations']:
+        print(f"* {rec}")
+    print("="*50)
+
+    # Log AI health status to local file
+    try:
+        with open("ai_health.log", "a", encoding="utf-8") as logf:
+            logf.write(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] AI Health: {ai_health_status}\n")
+    except Exception:
+        pass
+
     return 0
 
 if __name__ == "__main__":

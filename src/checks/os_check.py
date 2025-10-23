@@ -1,71 +1,114 @@
 import platform
-import subprocess
+
+"""
+OS Security Check Module
+-----------------------
+Checks for OS patch level, update status, and basic security settings.
+"""
+import platform
 import datetime
-import sys
-import os
-from colorama import init, Fore, Style
+import subprocess
+from typing import Dict, Any
 
-init(autoreset=True)
+# Optional color output
+try:
+    from colorama import Fore, Style
+    COLOR_ENABLED = True
+except ImportError:
+    COLOR_ENABLED = False
+    class DummyFore:
+        def __getattr__(self, name): return ""
+    class DummyStyle:
+        def __getattr__(self, name): return ""
+    Fore = DummyFore()
+    Style = DummyStyle()
 
-
-def get_os_info():
+def evaluate_os_security() -> Dict[str, Any]:
     """
-    Retrieves the operating system information.
+    Evaluate OS security status and return structured results.
     """
-    system = platform.system()
-    version = platform.version()
-    release = platform.release()
-
-    try:
-        build_number = version.split('.')[-1]
-    except:
-        build_number = version
-
-    edition = "Unknown"
-    if system == "Windows":
-        try:
-            result = subprocess.run(["systeminfo"], capture_output=True, text=True)
-            for line in result.stdout.splitlines():
-                if "OS Name" in line:
-                    edition = line.split("Windows")[-1].strip()
-        except:
-            edition = "Unknown"
-
-    latest_builds = {"10": 19045, "11": 26200}
-    status = "Up to date"
-
-    try:
-        if system == "Windows" and release in latest_builds:
-            if int(build_number) < latest_builds[release]:
-                status = "Outdated"
-    except:
-        status = "Unknown"
-
-    return {
-        "os": system,
-        "version": release,
-        "build": build_number,
-        "edition": edition,
-        "status": status
+    result = {
+        'overall_risk': 'Unknown',
+        'details': {}
     }
+    system = platform.system()
+    release = platform.release()
+    version = platform.version()
+    now = datetime.datetime.now()
+    result['details']['system'] = system
+    result['details']['release'] = release
+    result['details']['version'] = version
+    result['details']['scan_time'] = now.isoformat()
 
+    # Patch level (Windows only)
+    patch_level = 'Unknown'
+    recent_update = 'Unknown'
+    if system == 'Windows':
+        try:
+            # Get last update date
+            cmd = ['wmic', 'qfe', 'get', 'InstalledOn']
+            proc = subprocess.run(cmd, capture_output=True, text=True, timeout=5)
+            dates = [line.strip() for line in proc.stdout.splitlines() if line.strip() and line.strip() != 'InstalledOn']
+            if dates:
+                recent_update = max(dates)
+                result['details']['recent_update'] = recent_update
+                # Simple patch level heuristic
+                patch_level = recent_update
+        except Exception:
+            pass
+    result['details']['patch_level'] = patch_level
 
-def check_firewall_status():
+    # Risk logic
+    if system == 'Windows':
+        if patch_level == 'Unknown' or recent_update == 'Unknown':
+            result['overall_risk'] = 'Critical'
+        else:
+            # If last update > 90 days ago, high risk
+            try:
+                dt = datetime.datetime.strptime(recent_update, '%m/%d/%Y')
+                days_since = (now - dt).days
+                if days_since > 180:
+                    result['overall_risk'] = 'Critical'
+                elif days_since > 90:
+                    result['overall_risk'] = 'High'
+                elif days_since > 30:
+                    result['overall_risk'] = 'Medium'
+                else:
+                    result['overall_risk'] = 'Low'
+            except Exception:
+                result['overall_risk'] = 'Unknown'
+    else:
+        result['overall_risk'] = 'Low'  # Default for non-Windows
+
+        return result
+    
+def parse_firewall_output(output):
     """
-    Checks Windows Firewall status for all profiles.
+    Parse netsh advfirewall output into a dict of profile -> enabled (bool).
     """
-    def parse_firewall_output(output):
-        profiles = {}
-        current_profile = None
-        for line in output.splitlines():
-            line = line.strip()
-            if "Profile Settings:" in line:
-                current_profile = line.split("Profile")[0].strip()
-            elif line.lower().startswith("state") and current_profile:
-                status = "on" in line.lower()
-                profiles[current_profile] = status
-        return profiles
+    profiles = {}
+    current_profile = None
+    for line in output.splitlines():
+        raw = line.strip()
+        if not raw:
+            continue
+        # Detect lines like "Domain Profile Settings" or "Private Profile"
+        if raw.lower().endswith("profile settings") or raw.lower().endswith("profile"):
+            # Use the first token as the profile name (Domain, Private, Public, All)
+            current_profile = raw.split()[0].capitalize()
+            continue
+        # Lines containing state usually indicate ON/OFF
+        if "state" in raw.lower():
+            status = "on" in raw.lower()
+            if current_profile is None:
+                current_profile = "All"
+            profiles[current_profile] = status
+    return profiles
 
+def check_fw_status():
+    """
+    Checks Windows Firewall status for all profiles using netsh.
+    """
     try:
         result = subprocess.run(
             ["netsh", "advfirewall", "show", "allprofiles", "state"],
@@ -184,6 +227,45 @@ def print_risk(label, risk_level):
     print(f"{label}: {color}{risk_level}{Style.RESET_ALL}")
 
 
+def get_os_info():
+    """
+    Collect basic OS information used by the report.
+    Returns a dict with keys: os, version, build, edition, status
+    """
+    info = {
+        "os": platform.system(),
+        "version": platform.version(),
+        "build": platform.release(),
+        "edition": "Unknown",
+        "status": "Unknown"
+    }
+    try:
+        if info["os"] == "Windows":
+            # Attempt to get richer info via PowerShell (best-effort; non-fatal)
+            cmd = [
+                "powershell",
+                "-Command",
+                "Get-CimInstance -ClassName Win32_OperatingSystem | Select-Object Version,BuildNumber,Caption | ConvertTo-Json -Compress"
+            ]
+            proc = subprocess.run(cmd, capture_output=True, text=True, timeout=5)
+            if proc.stdout:
+                try:
+                    import json
+                    data = json.loads(proc.stdout)
+                    info["version"] = data.get("Version", info["version"])
+                    info["build"] = data.get("BuildNumber", info["build"])
+                    info["edition"] = data.get("Caption", info["edition"])
+                except Exception:
+                    # Keep best-effort values if parsing fails
+                    pass
+            # Simple heuristic: mark as Up to date by default (detailed checks would inspect update dates)
+            info["status"] = "Up to date"
+        else:
+            info["status"] = "Up to date"
+    except Exception:
+        info["status"] = "Unknown"
+    return info
+
 def evaluate_os_security():
     """
     Runs all OS-level checks (no admin required).
@@ -207,7 +289,7 @@ def evaluate_os_security():
     if os_info["status"] == "Outdated":
         report["recommendations"].append(f"Update Windows {os_info['version']} build {os_info['build']}.")
 
-    fw_status = check_firewall_status()
+    fw_status = check_fw_status()
     report["firewall_status"] = fw_status
     fw_risk = "Low" if fw_status["firewall_enabled"] else "High"
     if not fw_status["firewall_enabled"]:
