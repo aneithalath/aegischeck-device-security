@@ -23,44 +23,55 @@ import subprocess
 from pathlib import Path
 from typing import Dict, Any, Callable, TypeVar, Optional, List, cast
 from concurrent.futures import ThreadPoolExecutor, Future
-# Import AI risk analyzer
-try:
-    from ai import risk_analyzer
-except ImportError:
-    try:
-        import src.ai.risk_analyzer as risk_analyzer
-    except ImportError:
-        risk_analyzer = None
+# Ensure src is in sys.path for imports
+SRC_PATH = str(Path(__file__).resolve().parent)
+if SRC_PATH not in sys.path:
+    sys.path.insert(0, SRC_PATH)
+# Integrate adaptive intelligence, anomaly detection, and trend visualizer
+from ai import learning
+from typing import TypeVar, Optional
+from checks import os_check, password_check, permissions_check
+T = TypeVar('T')
 
-
-
-# Always ensure project root is in sys.path for absolute imports
-PROJECT_ROOT = str(Path(__file__).resolve().parent.parent)
-if PROJECT_ROOT not in sys.path:
-    sys.path.insert(0, PROJECT_ROOT)
-
-try:
-    from src.checks import os_check, permissions_check, password_check
-except ImportError as e:
-    print("Error: Could not import check modules. Make sure to run from project root.")
-    print("Usage: python -m src.main or python src/main.py from project root.")
-    print(f"Actual ImportError: {e}")
-    # Check for __init__.py existence
-    checks_init = Path(__file__).parent / "checks" / "__init__.py"
-    src_init = Path(__file__).parent / "__init__.py"
-    if not checks_init.exists():
-        print(f"Missing: {checks_init}")
-    if not src_init.exists():
-        print(f"Missing: {src_init}")
-    sys.exit(1)
-
-# Optional colored output with graceful fallback
+# ProgressIndicator class definition (move to top-level if not already)
+class ProgressIndicator:
+    def __init__(self, message: str, animation_type: str = "dots"):
+        self.message = message
+        self.animation_type = animation_type
+        self.running = False
+        self.thread: Optional[threading.Thread] = None
+        self.animations = {
+            "dots": [".", "..", "...", "...."],
+            "spinner": ["-", "\\", "|", "/"],
+            "bar": ["[    ]", "[=   ]", "[==  ]", "[=== ]", "[====]"],
+        }
+    def _animate(self):
+        frames = self.animations.get(self.animation_type, self.animations["dots"])
+        frame_count = len(frames)
+        counter = 0
+        sys.stdout.write(f"\n{self.message} ")
+        sys.stdout.flush()
+        while self.running:
+            frame = frames[counter % frame_count]
+            sys.stdout.write(f"{frame}\b" * len(frame))
+            sys.stdout.flush()
+            counter += 1
+            time.sleep(0.25)
+    def start(self):
+        self.running = True
+        self.thread = threading.Thread(target=self._animate)
+        self.thread.daemon = True
+        self.thread.start()
+    def stop(self):
+        self.running = False
+        if self.thread:
+            self.thread.join(timeout=1.0)
+        sys.stdout.write("\n")
+        sys.stdout.flush()
 try:
     from colorama import init, Fore, Style
     init(autoreset=True)
     COLOR_ENABLED = True
-    
-    # Define color mappings for risk levels
     RISK_COLORS = {
         "Low": Fore.GREEN,
         "Medium": Fore.YELLOW,
@@ -71,26 +82,86 @@ try:
     }
 except ImportError:
     COLOR_ENABLED = False
-    # Dummy color objects if colorama is not available
     class DummyFore:
-        def __getattr__(self, name):
-            return ""
+        def __getattr__(self, name): return ""
     class DummyStyle:
-        def __getattr__(self, name):
-            return ""
+        def __getattr__(self, name): return ""
     Fore = DummyFore()
     Style = DummyStyle()
     RISK_COLORS = {}
+try:
+    from src.ai import risk_analyzer
+except ImportError:
+    risk_analyzer = None
 
-# Type variable for generic function
-T = TypeVar('T')
+def main() -> None:
+    # ...existing code...
+    ai_health_status = "OK"
+    ai_result = None
+    try:
+        scan_data = None
+        # risk_analyzer is already imported at top-level; do not re-import or overwrite
+        # Run checks and get results
+        results = run_checks(parse_arguments())
+        if risk_analyzer:
+            scan_data = {
+                "score": None,
+                "risk_grade": "Unknown",
+                "insights": [],
+                "recommendations": []
+            }
+            # Build Gemini prompt using learning
+            prompt = learning.build_gemini_prompt(scan_data)
+            ai_result = risk_analyzer.analyze_risks(
+                results.get("os", {}),
+                results.get("passwords", {}),
+                results.get("permissions", {}),
+                fallback=False,
+                latest_results=results
+            )
+            scan_data["score"] = ai_result.get("score", 0)
+            scan_data["risk_grade"] = ai_result.get("grade", "Unknown")
+            scan_data["insights"] = ai_result.get("insights", [])
+            scan_data["recommendations"] = ai_result.get("recommendations", [])
 
-# ===============================
-# Progress Animation Functions
-# ===============================
-class ProgressIndicator:
-    """Terminal progress animation that runs in a separate thread."""
-    
+            learning.save_scan(scan_data)
+            anomalies = learning.detect_anomalies(scan_data)
+            if anomalies:
+                print("\n⚠️  Anomalies detected:")
+                for a in anomalies:
+                    print(" -", a)
+            learning.show_trend()
+        else:
+            ai_health_status = "ERROR"
+            ai_result = {"display": "AI risk analyzer not available.", "insights": [], "recommendations": []}
+    except Exception as e:
+        ai_health_status = "ERROR"
+        ai_result = {"display": f"Error: {e}", "insights": [], "recommendations": []}
+
+    # Ensure Fore and Style are imported
+    try:
+        from colorama import Fore, Style
+    except ImportError:
+        class DummyFore:
+            def __getattr__(self, name): return ""
+        class DummyStyle:
+            def __getattr__(self, name): return ""
+        Fore = DummyFore()
+        Style = DummyStyle()
+
+    print("\n" + "="*50)
+    print(f"{Fore.MAGENTA}{Style.BRIGHT}AI Risk Analyzer Summary{Style.RESET_ALL}")
+    print(f"Security AI Health: {ai_health_status}")
+    print(ai_result['display'])
+    print("\nInsights:")
+    for insight in ai_result['insights']:
+        print(" -", insight)
+    print("\nRecommendations:")
+    for rec in ai_result['recommendations']:
+        print(" -", rec)
+    print("="*50)
+
+    return 0
     def __init__(self, message: str, animation_type: str = "dots"):
         """
         Initialize progress indicator with message and animation type.
