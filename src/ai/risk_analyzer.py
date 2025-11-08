@@ -143,6 +143,18 @@ def analyze_risks(
     Uses Gemini API unless fallback=True or API fails.
     Returns a dict with contextual and predictive analysis.
     """
+    # --- Adaptive Intelligence Integration ---
+    from . import learning
+    import traceback
+    import logging
+    LOG_PATH = os.path.join(os.path.dirname(__file__), '../../ai_health.log')
+    def log_health_event(event: str):
+        try:
+            with open(LOG_PATH, 'a', encoding='utf-8') as logf:
+                logf.write(f"[{datetime.datetime.now().isoformat()}] {event}\n")
+        except Exception:
+            pass
+
     sanitized = {
         'os_risk': os_results.get('overall_risk', 'Unknown'),
         'os_patch': os_results.get('details', {}).get('patch_level', 'Unknown'),
@@ -166,6 +178,16 @@ def analyze_risks(
     predictive = run_predictive_analysis(latest_results or {'os': os_results, 'passwords': pw_results, 'permissions': perm_results})
     contextual_payload = build_contextual_payload(latest_results or {'os': os_results, 'passwords': pw_results, 'permissions': perm_results}, history)
     contextual_payload['predictive'] = predictive
+
+    # --- Adaptive Prompt Engineering ---
+    try:
+        adaptive_context = learning.get_adaptive_prompt_context(history, sanitized)
+    except Exception as e:
+        adaptive_context = None
+        log_health_event(f"Adaptive context error: {e}")
+
+    # --- Fallback Chain: Gemini → Offline Predictor → Hardcoded Fallback ---
+    # 1. Try Gemini
     if not fallback:
         api_key = _get_gemini_api_key()
         if api_key:
@@ -173,18 +195,7 @@ def analyze_risks(
                 _install_google_genai()
                 import google.generativeai as genai
                 genai.configure(api_key=api_key)
-                prompt = (
-                    "You are a cybersecurity intelligence model. Analyze the current and historical device risk data, correlate patterns, and provide trend-aware insights and predictive advice.\n"
-                    f"Current and historical risk data (JSON):\n{json.dumps(contextual_payload, indent=2)}\n"
-                    "Instructions:\n"
-                    "- Provide 2–5 insights linking multiple risk vectors (e.g., how OS risk and password risk interact).\n"
-                    "- Provide 2–5 actionable recommendations.\n"
-                    "- Provide 1–2 predictive suggestions (e.g., 'If passwords were all secure, risk would drop to X').\n"
-                    "- Respond exactly in JSON with the keys: 'score' (0-100), 'grade' (Low/Medium/High/Critical), 'insights' (2-5 strings), 'recommendations' (2-5 strings), 'predictive' (1-2 strings).\n"
-                    "- Do NOT include any personal info, passwords, URLs, or Wi-Fi SSIDs.\n"
-                    "- If history is present, highlight trends (improving, declining, stable).\n"
-                    "- If parsing fails, fallback to local analysis.\n"
-                )
+                prompt = learning.compose_gemini_prompt(contextual_payload, adaptive_context)
                 model = genai.GenerativeModel('gemini-2.0-flash-lite')
                 response = model.generate_content(prompt)
                 import re
@@ -213,6 +224,7 @@ def analyze_risks(
                 history_entry['insights'] = insights
                 history_entry['recommendations'] = recommendations
                 append_risk_history(history_entry)
+                log_health_event("Gemini success")
                 return {
                     'score': score,
                     'grade': grade,
@@ -223,75 +235,119 @@ def analyze_risks(
                     'predictive': predictive_suggestions,
                     'display': display
                 }
-            except Exception:
-                pass  # fallback below
-    # --- Local Backup Analyzer ---
-    score = 0
-    grade = "Low"
-    health = "FALLBACK MODE"
-    insights: List[str] = []
-    recommendations: List[str] = []
-    os_risk = sanitized['os_risk']
-    if os_risk == "Critical":
-        score += 40
-        grade = "Critical"
-        insights.append("Critical OS issues detected.")
-        recommendations.append("Update your OS and review security settings immediately.")
-    elif os_risk == "High":
-        score += 30
-        grade = "High"
-        insights.append("High-risk OS vulnerabilities or missing patches.")
-        recommendations.append("Install all pending updates and enable automatic patching.")
-    elif os_risk == "Medium":
-        score += 15
-        grade = "Medium"
-        insights.append("Moderate OS security. Improvements recommended.")
-        recommendations.append("Check for updates and review security settings.")
-    elif os_risk == "Low":
-        score += 5
-        insights.append("No critical OS issues detected—your setup appears stable.")
-    else:
-        insights.append("OS risk could not be determined.")
-    pw_total = sanitized['pw_total']
-    pw_compromised = sanitized['pw_compromised']
-    if pw_compromised > 0:
-        score += min(30, pw_compromised * 5)
-        insights.append(f"{pw_compromised} of {pw_total} saved passwords are weak or compromised.")
-        recommendations.append("Change all weak/compromised passwords. Use at least 12 characters with symbols.")
-    elif pw_total > 0:
-        insights.append("No weak or compromised passwords detected.")
-    else:
-        insights.append("No saved passwords found.")
-    perm_risk_count = sanitized['perm_risk_count']
-    if perm_risk_count > 0:
-        score += min(20, perm_risk_count * 5)
-        insights.append(f"{perm_risk_count} risky startup programs or permissions detected.")
-        recommendations.append("Review and disable unnecessary startup programs and permissions.")
-    else:
-        insights.append("No risky startup programs detected.")
-    if score >= 70:
-        grade = "Critical"
-    elif score >= 50:
-        grade = "High"
-    elif score >= 25:
-        grade = "Medium"
-    else:
+            except Exception as e:
+                log_health_event(f"Gemini failure: {e}\n{traceback.format_exc()}")
+
+    # 2. Try Offline Predictor
+    try:
+        offline_pred = learning.predict_next_risk(history, sanitized)
+        if offline_pred:
+            score = float(offline_pred.get('score', 0))
+            grade = offline_pred.get('grade', 'Low')
+            insights = offline_pred.get('insights', [])
+            recommendations = offline_pred.get('recommendations', [])
+            predictive_suggestions = offline_pred.get('predictive', [])
+            display = colorize(f"Risk Grade: {grade} (Score: {score}/100)", grade)
+            history_entry['score'] = score
+            history_entry['grade'] = grade
+            history_entry['insights'] = insights
+            history_entry['recommendations'] = recommendations
+            append_risk_history(history_entry)
+            log_health_event("Offline predictor success")
+            return {
+                'score': score,
+                'grade': grade,
+                'color': grade,
+                'health': 'OFFLINE_PREDICTOR',
+                'insights': insights,
+                'recommendations': recommendations,
+                'predictive': predictive_suggestions,
+                'display': display
+            }
+    except Exception as e:
+        log_health_event(f"Offline predictor failure: {e}\n{traceback.format_exc()}")
+
+    # 3. Hardcoded Fallback
+    try:
+        score = 0
         grade = "Low"
-    history_entry['score'] = min(100, score)
-    history_entry['grade'] = grade
-    history_entry['insights'] = insights
-    history_entry['recommendations'] = recommendations
-    append_risk_history(history_entry)
-    return {
-        'score': min(100, score),
-        'grade': grade,
-        'color': grade,
-        'health': health,
-        'insights': insights,
-        'recommendations': recommendations,
-        'predictive': [],
-        'display': colorize(f"Risk Grade: {grade} (Score: {score}/100)", grade)
-    }
+        health = "HARDCODED_FALLBACK"
+        insights: List[str] = []
+        recommendations: List[str] = []
+        os_risk = sanitized['os_risk']
+        if os_risk == "Critical":
+            score += 40
+            grade = "Critical"
+            insights.append("Critical OS issues detected.")
+            recommendations.append("Update your OS and review security settings immediately.")
+        elif os_risk == "High":
+            score += 30
+            grade = "High"
+            insights.append("High-risk OS vulnerabilities or missing patches.")
+            recommendations.append("Install all pending updates and enable automatic patching.")
+        elif os_risk == "Medium":
+            score += 15
+            grade = "Medium"
+            insights.append("Moderate OS security. Improvements recommended.")
+            recommendations.append("Check for updates and review security settings.")
+        elif os_risk == "Low":
+            score += 5
+            insights.append("No critical OS issues detected—your setup appears stable.")
+        else:
+            insights.append("OS risk could not be determined.")
+        pw_total = sanitized['pw_total']
+        pw_compromised = sanitized['pw_compromised']
+        if pw_compromised > 0:
+            score += min(30, pw_compromised * 5)
+            insights.append(f"{pw_compromised} of {pw_total} saved passwords are weak or compromised.")
+            recommendations.append("Change all weak/compromised passwords. Use at least 12 characters with symbols.")
+        elif pw_total > 0:
+            insights.append("No weak or compromised passwords detected.")
+        else:
+            insights.append("No saved passwords found.")
+        perm_risk_count = sanitized['perm_risk_count']
+        if perm_risk_count > 0:
+            score += min(20, perm_risk_count * 5)
+            insights.append(f"{perm_risk_count} risky startup programs or permissions detected.")
+            recommendations.append("Review and disable unnecessary startup programs and permissions.")
+        else:
+            insights.append("No risky startup programs detected.")
+        if score >= 70:
+            grade = "Critical"
+        elif score >= 50:
+            grade = "High"
+        elif score >= 25:
+            grade = "Medium"
+        else:
+            grade = "Low"
+        history_entry['score'] = min(100, score)
+        history_entry['grade'] = grade
+        history_entry['insights'] = insights
+        history_entry['recommendations'] = recommendations
+        append_risk_history(history_entry)
+        log_health_event("Hardcoded fallback used")
+        return {
+            'score': min(100, score),
+            'grade': grade,
+            'color': grade,
+            'health': health,
+            'insights': insights,
+            'recommendations': recommendations,
+            'predictive': [],
+            'display': colorize(f"Risk Grade: {grade} (Score: {score}/100)", grade)
+        }
+    except Exception as e:
+        log_health_event(f"Hardcoded fallback failure: {e}\n{traceback.format_exc()}")
+        return {
+            'score': 0,
+            'grade': 'Low',
+            'color': 'Low',
+            'health': 'ERROR',
+            'insights': ["Risk analysis failed."],
+            'recommendations': ["Try again or check logs."],
+            'predictive': [],
+            'display': colorize("Risk Grade: Low (Score: 0/100)", 'Low')
+        }
 
 """
 Unified AI Risk Analyzer for Personal Device Security Advisor

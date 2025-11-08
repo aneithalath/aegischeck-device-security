@@ -208,3 +208,7 @@ __marimo__/
 
 # Local data (should not be committed)
 /data/
+/docs/notes.md
+
+# Health Log
+ai_health.log

@@ -3,20 +3,273 @@ import json
 import datetime
 import math
 from collections import Counter, defaultdict
+import numpy as np
+from sentence_transformers import SentenceTransformer
+from sklearn.ensemble import RandomForestRegressor
+from sklearn.exceptions import NotFittedError
+import threading
 from typing import List, Dict, Any, Tuple
 
 HISTORY_PATH = os.path.join(os.path.dirname(__file__), '../../data/risk_history.json')
+EMBEDDINGS_PATH = os.path.join(os.path.dirname(__file__), '../../data/risk_embeddings.json')
 HISTORY_MAX = 100
 CATEGORY_KEYWORDS = [
-    ("password", ["password", "credential", "compromised", "breach", "mfa", "account"]),
-    ("os", ["os", "patch", "update", "vulnerab", "windows", "system"]),
-    ("permissions", ["permission", "consent", "access", "privilege", "admin"]),
-    ("startup", ["startup", "autostart", "boot", "autorun"]),
-    ("mfa", ["mfa", "multi-factor", "2fa"]),
-    ("patch", ["patch", "update", "fix"]),
-    ("network", ["network", "wifi", "ssid", "connection"]),
-    ("browser", ["browser", "chrome", "firefox", "edge", "safari"]),
+    # Example: ('password', ['password', 'credential', 'login']),
+    ('password', ['password', 'credential', 'login']),
+    ('os', ['os', 'system', 'patch', 'update']),
+    ('permissions', ['permission', 'access', 'startup']),
+    ('mfa', ['mfa', 'multi-factor', '2fa']),
+    ('network', ['network', 'wifi', 'ssid']),
+    ('browser', ['browser', 'extension', 'web']),
 ]
+_embed_lock = threading.Lock()
+_model = None
+def get_embedding_model():
+    global _model
+    if _model is None:
+        with _embed_lock:
+            if _model is None:
+                _model = SentenceTransformer('all-MiniLM-L6-v2')
+    return _model
+
+def compute_embedding(text: str) -> list:
+    model = get_embedding_model()
+    emb = model.encode([text], show_progress_bar=False)
+    return emb[0].tolist()
+
+def save_embeddings(embeddings: list):
+    os.makedirs(os.path.dirname(EMBEDDINGS_PATH), exist_ok=True)
+    with open(EMBEDDINGS_PATH, 'w', encoding='utf-8') as f:
+        json.dump(embeddings, f, indent=2)
+
+def load_embeddings() -> list:
+    if not os.path.exists(EMBEDDINGS_PATH):
+        return []
+    try:
+        with open(EMBEDDINGS_PATH, 'r', encoding='utf-8') as f:
+            return json.load(f)
+    except Exception:
+        return []
+
+def update_embeddings():
+    """Ensure embeddings are up to date for all history entries."""
+    history = load_history()
+    embeddings = []
+    model = get_embedding_model()
+    for entry in history:
+        text = '\n'.join(entry.get('insights', []) + entry.get('recommendations', []))
+        emb = model.encode([text], show_progress_bar=False)[0].tolist()
+        meta = {
+            'timestamp': entry.get('timestamp'),
+            'score': entry.get('score'),
+            'grade': entry.get('grade'),
+            'embedding': emb,
+            'insights': entry.get('insights', []),
+            'recommendations': entry.get('recommendations', []),
+            'summary': text[:200]
+        }
+        embeddings.append(meta)
+    save_embeddings(embeddings)
+    return embeddings
+
+def cosine_similarity(a, b):
+    a = np.array(a)
+    b = np.array(b)
+    return float(np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b) + 1e-8))
+
+def get_similar_risks(current_embedding, top_k=3) -> list:
+    """Returns summaries of top_k most similar past risks."""
+    embeddings = load_embeddings()
+    if not embeddings:
+        return []
+    sims = []
+    for entry in embeddings:
+        sim = cosine_similarity(current_embedding, entry['embedding'])
+        sims.append((sim, entry))
+    sims.sort(reverse=True, key=lambda x: x[0])
+    return [e['summary'] for _, e in sims[:top_k]]
+def summarize_risk_history(limit=5):
+    """Summarize recent risk history for prompt context."""
+    history = load_history()[-limit:]
+    if not history:
+        return "No historical data available."
+    lines = []
+    for h in history:
+        t = h.get('timestamp', '')
+        g = h.get('grade', '')
+        s = h.get('score', '')
+        cats = ', '.join(h.get('categories', {}).keys()) if h.get('categories') else ''
+        lines.append(f"[{t[:10]}] Grade: {g}, Score: {s}, Categories: {cats}")
+    return '\n'.join(lines)
+
+def determine_focus_topic():
+    """Determine the main focus topic for this session based on recent history."""
+    history = load_history()
+    if not history:
+        return "General security hygiene"
+    cat_summary = summarize_categories(history)
+    if not cat_summary:
+        return "General security hygiene"
+    focus = max(cat_summary.items(), key=lambda x: x[1])[0]
+    focus_map = {
+        'password': 'password hygiene',
+        'os': 'system patching',
+        'permissions': 'permissions management',
+        'startup': 'startup program review',
+        'mfa': 'multi-factor authentication',
+        'patch': 'system patching',
+        'network': 'network security',
+        'browser': 'browser security',
+    }
+    return focus_map.get(focus, focus)
+
+def get_adaptive_prompt_context():
+    """Return focus and context summary for adaptive prompt engineering."""
+    focus = determine_focus_topic()
+    context = summarize_risk_history(limit=5)
+    return {"focus": focus, "context": context}
+
+# --- Adaptive Prompt Engineering ---
+def get_adaptive_prompt_context(history, sanitized):
+    """Return focus and context summary for adaptive prompt engineering, using history and current scan."""
+    # Use the most recent history and current scan to determine focus
+    focus = determine_focus_topic()
+    context = summarize_risk_history(limit=5)
+    # Optionally, add more context from sanitized input
+    return {"focus": focus, "context": context, "current": sanitized}
+
+# --- Gemini Prompt Composer ---
+def compose_gemini_prompt(contextual_payload, adaptive_context):
+    """Compose a prompt string for Gemini using context and adaptive focus."""
+    prompt = (
+        "You are a cybersecurity intelligence model. Analyze the current and historical device risk data, correlate patterns, and provide trend-aware insights and predictive advice.\n"
+        f"Current and historical risk data (JSON):\n{json.dumps(contextual_payload, indent=2)}\n"
+        f"Adaptive context: {json.dumps(adaptive_context, indent=2)}\n"
+        "Instructions:\n"
+        "- Provide 2–5 insights linking multiple risk vectors (e.g., how OS risk and password risk interact).\n"
+        "- Provide 2–5 actionable recommendations.\n"
+        "- Provide 1–2 predictive suggestions (e.g., 'If passwords were all secure, risk would drop to X').\n"
+        "- Respond exactly in JSON with the keys: 'score' (0-100), 'grade' (Low/Medium/High/Critical), 'insights' (2-5 strings), 'recommendations' (2-5 strings), 'predictive' (1-2 strings).\n"
+        "- Do NOT include any personal info, passwords, URLs, or Wi-Fi SSIDs.\n"
+        "- If history is present, highlight trends (improving, declining, stable).\n"
+        "- If parsing fails, fallback to local analysis.\n"
+    )
+    return prompt
+
+# --- Offline Predictive Modeling ---
+def train_offline_predictor():
+    """Train a RandomForestRegressor on history if enough data."""
+    history = load_history()
+    if len(history) < 5:
+        return None, False
+    X = []
+    y = []
+    for h in history:
+        try:
+            X.append([
+                float(h.get('pw_compromised', 0)),
+                float(h.get('perm_risk_count', 0)),
+                float(h.get('score', 0)),
+            ])
+            y.append(float(h.get('score', 0)))
+        except Exception:
+            continue
+    if len(X) < 5:
+        return None, False
+    model = RandomForestRegressor(n_estimators=20, random_state=42)
+    model.fit(X, y)
+    return model, True
+
+def predict_next_risk(model=None):
+    """Predict the next risk score and commentary."""
+    history = load_history()
+    if len(history) < 5:
+        return {
+            "score": None,
+            "commentary": "Insufficient historical data for prediction.",
+            "source": "hardcoded_fallback"
+        }
+    if model is None:
+        model, ok = train_offline_predictor()
+        if not ok:
+            return {
+                "score": None,
+                "commentary": "Insufficient historical data for prediction.",
+                "source": "hardcoded_fallback"
+            }
+    last = history[-1]
+    X_pred = [[
+        float(last.get('pw_compromised', 0)),
+        float(last.get('perm_risk_count', 0)),
+        float(last.get('score', 0)),
+    ]]
+    try:
+        pred = float(model.predict(X_pred)[0])
+        commentary = f"Projected score may {'drop' if pred < X_pred[0][2] else 'rise'} from {X_pred[0][2]:.0f} → {pred:.0f} next scan."
+        return {
+            "score": round(pred, 2),
+            "commentary": commentary,
+            "source": "offline_predictor"
+        }
+    except Exception:
+        return {
+            "score": None,
+            "commentary": "Prediction failed.",
+            "source": "hardcoded_fallback"
+        }
+
+# --- Offline Predictor for Fallback Chain ---
+def predict_next_risk(history=None, sanitized=None, model=None):
+    """Predict the next risk score and generate fallback insights/recommendations."""
+    if history is None:
+        history = load_history()
+    if sanitized is None:
+        sanitized = {}
+    if len(history) < 5:
+        return None
+    if model is None:
+        model, ok = train_offline_predictor()
+        if not ok:
+            return None
+    last = history[-1]
+    X_pred = [[
+        float(last.get('pw_compromised', 0)),
+        float(last.get('perm_risk_count', 0)),
+        float(last.get('score', 0)),
+    ]]
+    try:
+        pred = float(model.predict(X_pred)[0])
+        # Simple logic for grade
+        if pred >= 70:
+            grade = "Critical"
+        elif pred >= 50:
+            grade = "High"
+        elif pred >= 25:
+            grade = "Medium"
+        else:
+            grade = "Low"
+        insights = [
+            f"Predicted next risk score: {pred:.1f} (current: {X_pred[0][2]:.1f})",
+            f"Password risk: {sanitized.get('pw_compromised', 'N/A')} compromised.",
+            f"Permission risk: {sanitized.get('perm_risk_count', 'N/A')} high/critical."
+        ]
+        recommendations = [
+            "Reduce compromised passwords and high-risk permissions to lower future risk.",
+            "Continue regular updates and security reviews."
+        ]
+        predictive = [
+            f"If all passwords were secure, risk would drop to ~{max(0, pred-20):.1f}.",
+            f"If permissions were all safe, risk would drop to ~{max(0, pred-10):.1f}."
+        ]
+        return {
+            "score": round(pred, 2),
+            "grade": grade,
+            "insights": insights,
+            "recommendations": recommendations,
+            "predictive": predictive
+        }
+    except Exception:
+        return None
 
 def load_history() -> List[Dict[str, Any]]:
     """Safely load risk history from JSON file."""
