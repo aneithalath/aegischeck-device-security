@@ -1,6 +1,7 @@
 import os
 import json
 import datetime
+from . import learning
 from typing import Dict, Any, List
 
 # Optional color output
@@ -38,13 +39,7 @@ HISTORY_PATH = os.path.join(os.path.dirname(__file__), '../../data/risk_history.
 HISTORY_MAX = 10
 
 def load_risk_history():
-    if not os.path.exists(HISTORY_PATH):
-        return []
-    try:
-        with open(HISTORY_PATH, 'r', encoding='utf-8') as f:
-            return json.load(f)
-    except Exception:
-        return []
+    return learning.load_history()
 
 def save_risk_history(history: list):
     try:
@@ -54,13 +49,14 @@ def save_risk_history(history: list):
         pass
 
 def append_risk_history(entry: dict):
-    history = load_risk_history()
-    history.append(entry)
-    history = history[-HISTORY_MAX:]
-    save_risk_history(history)
+    # Enrich with categories and prune
+    entry = learning.enrich_entry_with_categories(entry)
+    learning.append_and_prune(entry)
 
 # --- Contextual Payload Builder ---
 def build_contextual_payload(latest_results: dict, history: list) -> dict:
+    # Use learning module for trend and categories
+    _, cat_summary, trend_info = learning.get_history_and_trends()
     payload = {
         'current': {
             'timestamp': datetime.datetime.now().isoformat(),
@@ -73,25 +69,9 @@ def build_contextual_payload(latest_results: dict, history: list) -> dict:
             'perm_risk_count': len([r for r in latest_results.get('permissions', {}).get('top_risks', []) if r.get('risk', '') in ('High', 'Critical')]),
         },
         'history': history[-HISTORY_MAX:],
-        'trend': {}
+        'trend': trend_info,
+        'category_summary': cat_summary
     }
-    if len(history) > 1:
-        prev = history[-2]
-        curr = history[-1]
-        payload['trend']['risk_score_change'] = curr['score'] - prev['score']
-        payload['trend']['grade_change'] = f"{prev['grade']} -> {curr['grade']}"
-        payload['trend']['pw_compromised_change'] = curr['pw_compromised'] - prev['pw_compromised']
-        payload['trend']['os_risk_change'] = f"{prev['os_risk']} -> {curr['os_risk']}"
-        payload['trend']['perm_risk_count_change'] = curr['perm_risk_count'] - prev['perm_risk_count']
-    if len(history) > 2:
-        scores = [h['score'] for h in history[-5:]]
-        if len(scores) > 1:
-            if scores[-1] > scores[0]:
-                payload['trend']['risk_trend'] = 'increasing'
-            elif scores[-1] < scores[0]:
-                payload['trend']['risk_trend'] = 'decreasing'
-            else:
-                payload['trend']['risk_trend'] = 'stable'
     return payload
 
 # --- Predictive Analysis Helper ---
