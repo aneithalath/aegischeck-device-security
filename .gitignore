@@ -212,3 +212,6 @@ __marimo__/
 
 # Health Log
 ai_health.log
+
+# Test file
+/src/ai/test_predictor.py
