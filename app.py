@@ -48,8 +48,8 @@ def run_full_scan():
     return results, ai_result, ai_health_status
 
 # Streamlit App
-st.set_page_config(page_title="Device Security Advisor", layout="wide")
-st.title("Personal Device Security Advisor")
+st.set_page_config(page_title="AegisCheck", layout="wide")
+st.title("AegisCheck - Device Security Advisor")
 
 # Sidebar navigation
 page = st.sidebar.radio("Navigation", ["Dashboard Overview", "Detailed Results"])

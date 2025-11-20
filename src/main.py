@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 # src/main.py
 """
-Personal Device Security Advisor
+AegisCheck - Device Security Advisor
 -------------------------------
 A unified security scanner that orchestrates multiple checks:
 - OS security check (updates, security settings)
@@ -344,7 +344,7 @@ def print_results_summary(results: Dict[str, Any]) -> None:
 def parse_arguments() -> argparse.Namespace:
     """Parse command line arguments."""
     parser = argparse.ArgumentParser(
-        description="Personal Device Security Advisor - Scan your system for security vulnerabilities.",
+        description="AegisCheck - Scan your system for security vulnerabilities.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter
     )
     parser.add_argument("--limit", type=int, default=200, 
@@ -409,7 +409,7 @@ def main() -> None:
     # Print banner
     print(f"{Fore.CYAN}{Style.BRIGHT}")
     print("=" * 50)
-    print("   PERSONAL DEVICE SECURITY ADVISOR")
+    print("   AEGISCHECK - DEVICE SECURITY ADVISOR")
     print("=" * 50)
     print(f"{Style.RESET_ALL}")
     
