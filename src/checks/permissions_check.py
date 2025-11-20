@@ -654,7 +654,18 @@ def run_permissions_audit(limit_output: int = 100):
 
     print("\nScan complete. Review 'TOP RISKS' and address items you don't recognize or that have concerning reasons.")
     print("Note: This tool is a lightweight, static/metadata-driven scanner. For dynamic analysis or removal, use dedicated endpoint/AV tools.")
-
+    return {
+            "top_risks": top,
+            "all_programs": assessed_programs,
+            "all_startups": assessed_startups,
+            "summary": {
+                "total_programs": len(assessed_programs),
+                "total_startups": len(assessed_startups),
+                "high_risk_count": len([x for x in combined if x.get("risk") == "HIGH"]),
+                "medium_risk_count": len([x for x in combined if x.get("risk") == "MEDIUM"]),
+                "low_risk_count": len([x for x in combined if x.get("risk") == "LOW"])
+            }
+        }
 # ---------------------------
 # CLI
 # ---------------------------

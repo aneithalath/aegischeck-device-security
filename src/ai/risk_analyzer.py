@@ -93,27 +93,27 @@ def run_predictive_analysis(latest_results: dict) -> dict:
         'os_fully_patched': sim_os
     }
 
-# --- Gemini API Integration ---
-def _get_gemini_api_key():
+# --- OpenRouter API Integration ---
+def _get_openrouter_api_key():
     api_key = None
     env_path = os.path.join(os.path.dirname(__file__), '../../.env')
     if os.path.exists(env_path):
         with open(env_path, 'r', encoding='utf-8') as f:
             for line in f:
-                if line.strip().startswith('GEMINI_API_KEY='):
+                if line.strip().startswith('OPENROUTER_API_KEY='):
                     api_key = line.strip().split('=', 1)[1]
                     break
     return api_key
 
-def _install_google_genai():
+def _install_openai():
     try:
-        import google.generativeai
+        import openai
     except ImportError:
         import subprocess
-        subprocess.run([os.sys.executable, '-m', 'pip', 'install', 'google-generativeai'], check=True)
+        subprocess.run([os.sys.executable, '-m', 'pip', 'install', 'openai'], check=True)
         req_path = os.path.join(os.path.dirname(__file__), '../../requirements.txt')
         with open(req_path, 'a', encoding='utf-8') as reqf:
-            reqf.write('\ngoogle-generativeai\n')
+            reqf.write('\nopenai\n')
 def load_risk_history():
     if not os.path.exists(HISTORY_PATH):
         return []
@@ -140,7 +140,7 @@ def analyze_risks(
 ) -> Dict[str, Any]:
     """
     Analyze device security risks and return a structured assessment.
-    Uses Gemini API unless fallback=True or API fails.
+    Uses OpenRouter API unless fallback=True or API fails.
     Returns a dict with contextual and predictive analysis.
     """
     # --- Adaptive Intelligence Integration ---
@@ -186,21 +186,28 @@ def analyze_risks(
         adaptive_context = None
         log_health_event(f"Adaptive context error: {e}")
 
-    # --- Fallback Chain: Gemini → Offline Predictor → Hardcoded Fallback ---
-    # 1. Try Gemini
+    # --- Fallback Chain: OpenRouter → Offline Predictor → Hardcoded Fallback ---
+    # 1. Try OpenRouter
     if not fallback:
-        api_key = _get_gemini_api_key()
+        api_key = _get_openrouter_api_key()
         if api_key:
             try:
-                _install_google_genai()
-                import google.generativeai as genai
-                genai.configure(api_key=api_key)
+                _install_openai()
+                from openai import OpenAI
+                client = OpenAI(
+                    base_url="https://openrouter.ai/api/v1",
+                    api_key=api_key,
+                )
                 prompt = learning.compose_gemini_prompt(contextual_payload, adaptive_context)
-                model = genai.GenerativeModel('gemini-2.0-flash-lite')
-                response = model.generate_content(prompt)
+                response = client.chat.completions.create(
+                    model="x-ai/grok-4.1-fast",
+                    messages=[
+                        {"role": "user", "content": prompt}
+                    ]
+                )
                 import re
                 import ast
-                text = response.text.strip()
+                text = response.choices[0].message.content.strip()
                 match = re.search(r'\{[\s\S]*\}', text)
                 if match:
                     json_str = match.group(0)
@@ -224,7 +231,7 @@ def analyze_risks(
                 history_entry['insights'] = insights
                 history_entry['recommendations'] = recommendations
                 append_risk_history(history_entry)
-                log_health_event("Gemini success")
+                log_health_event("OpenRouter success")
                 return {
                     'score': score,
                     'grade': grade,
@@ -236,7 +243,7 @@ def analyze_risks(
                     'display': display
                 }
             except Exception as e:
-                log_health_event(f"Gemini failure: {e}\n{traceback.format_exc()}")
+                log_health_event(f"OpenRouter failure: {e}\n{traceback.format_exc()}")
 
     # 2. Try Offline Predictor
     try:
@@ -356,14 +363,14 @@ Analyzes outputs from OS, password, and permissions checks to generate a risk sc
 """
 
 """
-Includes both Gemini (primary) and LocalRiskAnalyzer (fallback) logic. Operates fully locally if needed.
+Includes both OpenRouter (primary) and LocalRiskAnalyzer (fallback) logic. Operates fully locally if needed.
 """
 
 """
 Unified AI Risk Analyzer for Personal Device Security Advisor
 ------------------------------------------------------------
 Analyzes outputs from OS, password, and permissions checks to generate a risk score and actionable recommendations.
-Supports Google Gemini API for natural language analysis, with automatic fallback to local backup analyzer.
+Supports OpenRouter API for natural language analysis, with automatic fallback to local backup analyzer.
 """
 import os
 import json
@@ -387,7 +394,7 @@ except ImportError:
         ) -> Dict[str, Any]:
             """
             Analyze device security risks and return a structured assessment.
-            Uses Gemini API unless fallback=True or API fails.
+            Uses OpenRouter API unless fallback=True or API fails.
             Returns a dict:
             {
                 'score': float,
@@ -431,14 +438,17 @@ except ImportError:
             contextual_payload = build_contextual_payload(latest_results or {'os': os_results, 'passwords': pw_results, 'permissions': perm_results}, history)
             contextual_payload['predictive'] = predictive
 
-            # --- Try Gemini API ---
+            # --- Try OpenRouter API ---
             if not fallback:
-                api_key = _get_gemini_api_key()
+                api_key = _get_openrouter_api_key()
                 if api_key:
                     try:
-                        _install_google_genai()
-                        import google.generativeai as genai
-                        genai.configure(api_key=api_key)
+                        _install_openai()
+                        from openai import OpenAI
+                        client = OpenAI(
+                            base_url="https://openrouter.ai/api/v1",
+                            api_key=api_key,
+                        )
 
                         prompt = (
                             "You are a cybersecurity intelligence model. Analyze the current and historical device risk data, correlate patterns, and provide trend-aware insights and predictive advice.\n"
@@ -453,11 +463,15 @@ except ImportError:
                             "- If parsing fails, fallback to local analysis.\n"
                         )
 
-                        model = genai.GenerativeModel('gemini-2.0-flash-lite')
-                        response = model.generate_content(prompt)
+                        response = client.chat.completions.create(
+                            model="google/gemini-2.0-flash-exp:free",
+                            messages=[
+                                {"role": "user", "content": prompt}
+                            ]
+                        )
                         import re
                         import ast
-                        text = response.text.strip()
+                        text = response.choices[0].message.content.strip()
                         match = re.search(r'\{[\s\S]*\}', text)
                         if match:
                             json_str = match.group(0)
@@ -498,20 +512,20 @@ except ImportError:
                     except Exception:
                         pass  # fallback below
 
-def _install_google_genai():
+def _install_openai():
     try:
-        import google.generativeai
+        import openai
     except ImportError:
         import subprocess
-        subprocess.run([os.sys.executable, '-m', 'pip', 'install', 'google-generativeai'], check=True)
+        subprocess.run([os.sys.executable, '-m', 'pip', 'install', 'openai'], check=True)
         # Add to requirements.txt
         req_path = os.path.join(os.path.dirname(__file__), '../../requirements.txt')
         with open(req_path, 'a', encoding='utf-8') as reqf:
-            reqf.write('\ngoogle-generativeai\n')
+            reqf.write('\nopenai\n')
 
 
     # --- Local Backup Analyzer ---
-    # This block is only used if Gemini API is not available or fallback is True
+    # This block is only used if OpenRouter API is not available or fallback is True
     def local_backup_analyzer(os_results, pw_results, perm_results):
         score = 0
         grade = "Low"
@@ -582,5 +596,3 @@ def _install_google_genai():
             'recommendations': recommendations,
             'display': colorize(f"Risk Grade: {grade} (Score: {score}/100)", grade)
         }
-
-
