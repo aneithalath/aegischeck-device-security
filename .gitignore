@@ -207,7 +207,8 @@ marimo/_lsp/
 __marimo__/
 
 # Local data (should not be committed)
-/data/
+/data/hibp_cache.json
+/data/risk_history.json
 /docs/notes.md
 
 # Health Log
