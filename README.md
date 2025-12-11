@@ -113,7 +113,3 @@ Permissions/Startup Programs Risk: Low
 Pull requests and suggestions are welcome! Please open an issue or PR if you have ideas or improvements.
 
 ---
-
-## 📄 License
-
-MIT License. See `LICENSE` file (if present) for details.
